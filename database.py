@@ -14,6 +14,7 @@ class DatabaseManager:
             "password": password,
             "host": host
         }
+        self.connection = None
         
     def connect(self):
         """Установка соединения с БД"""
