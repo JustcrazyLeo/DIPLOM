@@ -1,5 +1,8 @@
 import logging
 import os
+import csv
+import io
+from telegram import InputFile
 from datetime import datetime
 from typing import Dict, List
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -27,7 +30,12 @@ TYPE_SELECTION, CATEGORY, AMOUNT, CONFIRM = range(4)
 
 # Клавиатура для выбора типа операции
 TYPE_KEYBOARD = ReplyKeyboardMarkup(
-    [["💰 Расход", "💵 Доход"], ["📊 Статистика", "📜 История"], ["❌ Отмена"]], 
+    [
+        ["💰 Расход", "💵 Доход"],
+        ["📊 Статистика", "📜 История"],
+        ["🎯 Цели", "🔄 Подписки"],
+        ["📤 Экспорт", "❌ Отмена"]
+    ],
     resize_keyboard=True,
     input_field_placeholder="Выберите действие..."
 )
@@ -73,6 +81,290 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
     return TYPE_SELECTION
+
+# Команда /export - экспорт данных в CSV
+async def export_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    records = user_data_store.get(user_id, [])
+    
+    if not records:
+        await update.message.reply_text(
+            "📭 Нет данных для экспорта.",
+            reply_markup=TYPE_KEYBOARD
+        )
+        return TYPE_SELECTION
+    
+    # Создаем CSV в памяти
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Заголовки
+    writer.writerow(['Дата', 'Тип', 'Категория', 'Сумма'])
+    
+    # Данные
+    for record in records:
+        writer.writerow([
+            record['date'],
+            record['type'],
+            record['category'],
+            f"{record['amount']:.2f}"
+        ])
+    
+    # Создаем файл
+    output.seek(0)
+    csv_file = io.BytesIO(output.getvalue().encode('utf-8'))
+    
+    # Отправляем файл
+    await update.message.reply_document(
+        document=InputFile(csv_file, filename=f'finance_{user_id}_{datetime.now().strftime("%Y%m%d")}.csv'),
+        caption=f"📊 Экспорт ваших финансовых данных\n"
+                f"Всего записей: {len(records)}",
+        reply_markup=TYPE_KEYBOARD
+    )
+    
+    return TYPE_SELECTION
+
+# Добавим в константы
+MONTHS_RU = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+             'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь']
+
+# Клавиатура для месячной статистики
+MONTHS_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["📊 Этот месяц", "📊 Прошлый месяц"],
+        ["📊 По месяцам", "⬅️ Назад"]
+    ],
+    resize_keyboard=True
+)
+
+# Обработка месячной статистики
+async def monthly_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    records = user_data_store.get(user_id, [])
+    
+    if not records:
+        await update.message.reply_text(
+            "📭 Нет данных для статистики.",
+            reply_markup=TYPE_KEYBOARD
+        )
+        return TYPE_SELECTION
+    
+    current_month = datetime.now().month
+    current_year = datetime.now().year
+    
+    # Собираем данные по месяцам
+    monthly_data = {}
+    for record in records:
+        record_date = datetime.strptime(record['date'], "%d.%m.%Y %H:%M")
+        month_key = f"{record_date.year}-{record_date.month}"
+        
+        if month_key not in monthly_data:
+            monthly_data[month_key] = {'доход': 0, 'расход': 0}
+        
+        monthly_data[month_key][record['type']] += record['amount']
+    
+    # Формируем статистику
+    stats_text = "📅 *Статистика по месяцам:*\n\n"
+    
+    for month_key in sorted(monthly_data.keys(), reverse=True)[:6]:  # Последние 6 месяцев
+        year, month = map(int, month_key.split('-'))
+        data = monthly_data[month_key]
+        
+        balance = data['доход'] - data['расход']
+        month_name = MONTHS_RU[month-1]
+        
+        stats_text += (
+            f"*{month_name} {year}*\n"
+            f"📈 Доходы: {data['доход']:,.2f}\n"
+            f"📉 Расходы: {data['расход']:,.2f}\n"
+            f"💼 Баланс: {balance:,.2f}\n\n"
+        ).replace(',', ' ')
+    
+    await update.message.reply_text(
+        stats_text,
+        reply_markup=TYPE_KEYBOARD,
+        parse_mode="Markdown"
+    )
+    return TYPE_SELECTION
+
+# Добавим в глобальные переменные
+user_goals: Dict[int, Dict] = {}
+
+# Команда /goal для установки целей
+async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    
+    if not args or len(args) < 2:
+        await update.message.reply_text(
+            "🎯 *Установка финансовой цели*\n\n"
+            "Использование: /goal [название] [сумма]\n"
+            "Пример: /goal Новая_машина 500000\n"
+            "Пример: /goal Отпуск 100000\n\n"
+            "Просмотреть цели: /goals\n"
+            "Удалить цель: /goal_remove [id]",
+            parse_mode="Markdown"
+        )
+        return
+    
+    try:
+        user_id = update.effective_user.id
+        goal_name = args[0]
+        goal_amount = float(args[1])
+        
+        if user_id not in user_goals:
+            user_goals[user_id] = {}
+        
+        goal_id = len(user_goals[user_id]) + 1
+        user_goals[user_id][goal_id] = {
+            'name': goal_name,
+            'target': goal_amount,
+            'saved': 0,
+            'created': datetime.now().strftime("%d.%m.%Y")
+        }
+        
+        await update.message.reply_text(
+            f"🎯 *Цель установлена!*\n\n"
+            f"ID: {goal_id}\n"
+            f"Название: {goal_name}\n"
+            f"Цель: {goal_amount:,.2f}\n"
+            f"Дата создания: {datetime.now().strftime('%d.%m.%Y')}",
+            parse_mode="Markdown"
+        )
+        
+    except ValueError:
+        await update.message.reply_text("❌ Неверная сумма!")
+
+# Просмотр целей
+async def show_goals(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if user_id not in user_goals or not user_goals[user_id]:
+        await update.message.reply_text("🎯 У вас еще нет финансовых целей.")
+        return
+    
+    goals_text = "🎯 *Ваши финансовые цели:*\n\n"
+    
+    for goal_id, goal in user_goals[user_id].items():
+        progress = (goal['saved'] / goal['target']) * 100 if goal['target'] > 0 else 0
+        progress_bar = "🟢" * int(progress / 10) + "⚪" * (10 - int(progress / 10))
+        
+        goals_text += (
+            f"*ID {goal_id}: {goal['name']}*\n"
+            f"Накоплено: {goal['saved']:,.2f} / {goal['target']:,.2f}\n"
+            f"Прогресс: {progress:.1f}%\n"
+            f"{progress_bar}\n"
+            f"Создана: {goal['created']}\n\n"
+        ).replace(',', ' ')
+    
+    await update.message.reply_text(goals_text, parse_mode="Markdown")
+
+# Добавление денег к цели
+async def add_to_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    
+    if not args or len(args) < 2:
+        await update.message.reply_text(
+            "💵 *Пополнить цель*\n\n"
+            "Использование: /goal_add [id] [сумма]\n"
+            "Пример: /goal_add 1 5000"
+        )
+        return
+    
+    try:
+        user_id = update.effective_user.id
+        goal_id = int(args[0])
+        amount = float(args[1])
+        
+        if user_id not in user_goals or goal_id not in user_goals[user_id]:
+            await update.message.reply_text("❌ Цель не найдена!")
+            return
+        
+        user_goals[user_id][goal_id]['saved'] += amount
+        
+        goal = user_goals[user_id][goal_id]
+        progress = (goal['saved'] / goal['target']) * 100
+        
+        await update.message.reply_text(
+            f"✅ *Средства добавлены!*\n\n"
+            f"Цель: {goal['name']}\n"
+            f"Добавлено: {amount:,.2f}\n"
+            f"Всего накоплено: {goal['saved']:,.2f}\n"
+            f"Прогресс: {progress:.1f}%",
+            parse_mode="Markdown"
+        )
+        
+    except (ValueError, IndexError):
+        await update.message.reply_text("❌ Неверные параметры!")
+
+# Глобальная переменная для регулярных платежей
+user_subscriptions: Dict[int, List] = {}
+
+# Команда для добавления регулярного платежа
+async def add_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    
+    if not args or len(args) < 3:
+        await update.message.reply_text(
+            "🔄 *Добавить регулярный платеж*\n\n"
+            "Использование: /subscribe [название] [сумма] [день месяца]\n"
+            "Пример: /subscribe Netflix 599 15\n"
+            "Пример: /subscribe Интернет 890 1\n\n"
+            "Мои подписки: /subscriptions",
+            parse_mode="Markdown"
+        )
+        return
+    
+    try:
+        user_id = update.effective_user.id
+        name = args[0]
+        amount = float(args[1])
+        day = int(args[2])
+        
+        if not 1 <= day <= 31:
+            await update.message.reply_text("❌ День должен быть от 1 до 31!")
+            return
+        
+        if user_id not in user_subscriptions:
+            user_subscriptions[user_id] = []
+        
+        subscription = {
+            'name': name,
+            'amount': amount,
+            'day': day,
+            'added': datetime.now().strftime("%d.%m.%Y")
+        }
+        
+        user_subscriptions[user_id].append(subscription)
+        
+        await update.message.reply_text(
+            f"✅ *Регулярный платеж добавлен!*\n\n"
+            f"Название: {name}\n"
+            f"Сумма: {amount:,.2f}\n"
+            f"Списание каждый: {day} число\n"
+            f"Добавлено: {datetime.now().strftime('%d.%m.%Y')}",
+            parse_mode="Markdown"
+        )
+        
+    except ValueError:
+        await update.message.reply_text("❌ Неверные параметры!")
+
+# Проверка регулярных платежей (можно запускать по расписанию)
+async def check_subscriptions(context: ContextTypes.DEFAULT_TYPE):
+    today = datetime.now()
+    
+    if today.day == 1:  # Проверяем 1 числа каждого месяца
+        for user_id, subscriptions in user_subscriptions.items():
+            total = sum(sub['amount'] for sub in subscriptions)
+            
+            if total > 0:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"📅 *Напоминание о регулярных платежах*\n\n"
+                        f"В этом месяце к оплате:\n"
+                        f"Общая сумма: {total:,.2f}\n\n"
+                        f"Не забудьте внести эти платежи!",
+                    parse_mode="Markdown"
+                )
 
 # Обработка выбора из главного меню
 async def handle_type_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -382,7 +674,47 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=TYPE_KEYBOARD,
         parse_mode="Markdown"
     )
-
+# Быстрые команды
+async def quick_expense(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    
+    if not args:
+        await update.message.reply_text(
+            "⚡ *Быстрый расход*\n\n"
+            "Использование: /ex [сумма] [категория]\n"
+            "Пример: /ex 350 еда\n"
+            "Пример: /ex 1500 транспорт",
+            parse_mode="Markdown"
+        )
+        return
+    
+    try:
+        user_id = update.effective_user.id
+        amount = float(args[0])
+        category = args[1] if len(args) > 1 else "Другое"
+        
+        # Сохраняем запись
+        record = {
+            "type": "расход",
+            "category": category,
+            "amount": amount,
+            "date": datetime.now().strftime("%d.%m.%Y %H:%M"),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        if user_id not in user_data_store:
+            user_data_store[user_id] = []
+        user_data_store[user_id].append(record)
+        
+        await update.message.reply_text(
+            f"✅ *Быстрая запись сохранена!*\n\n"
+            f"📉 Расход: {category}\n"
+            f"💰 {amount:,.2f}",
+            parse_mode="Markdown"
+        )
+        
+    except ValueError:
+        await update.message.reply_text("❌ Неверная сумма!")
 # Отмена
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -443,7 +775,21 @@ def main():
     # Регистрируем обработчики
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("export", export_data))
+    application.add_handler(CommandHandler("goal", set_goal))
+    application.add_handler(CommandHandler("goals", show_goals))
+    application.add_handler(CommandHandler("goal_add", add_to_goal))
+    application.add_handler(CommandHandler("subscribe", add_subscription))
     
+    # Добавим JobQueue для проверки подписок
+    job_queue = application.job_queue
+    if job_queue:
+        # Проверка каждое 1 число месяца в 10:00
+        job_queue.run_monthly(
+            check_subscriptions,
+            when=datetime.time(hour=10, minute=0),
+            day=1
+        )
     # Обработчик для неизвестных сообщений (должен быть последним)
     application.add_handler(MessageHandler(filters.ALL, unknown_message))
     
