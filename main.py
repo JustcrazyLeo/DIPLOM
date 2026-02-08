@@ -3,6 +3,7 @@ import os
 import csv
 import io
 from telegram import InputFile
+from datetime import timedelta
 from datetime import datetime
 from typing import Dict, List
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -38,6 +39,16 @@ TYPE_KEYBOARD = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True,
     input_field_placeholder="Выберите действие..."
+)
+
+QUICK_CATEGORIES_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["🍔 Еда 150", "🚗 Такси 300"],
+        ["☕ Кофе 250", "🛒 Продукты 1000"],
+        ["🎬 Кино 500", "⬅️ Отмена"]
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True
 )
 
 # Клавиатура для выбора категорий расходов
@@ -81,6 +92,97 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
     return TYPE_SELECTION
+
+async def quick_expense_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Меню быстрых расходов"""
+    await update.message.reply_text(
+        "⚡ *Выберите быстрый расход:*",
+        reply_markup=QUICK_CATEGORIES_KEYBOARD,
+        parse_mode="Markdown"
+    )
+    return TYPE_SELECTION
+
+# Обработка быстрых расходов
+# Обработка быстрых расходов
+async def handle_quick_expense(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    
+    if "Отмена" in text:
+        await update.message.reply_text(
+            "Быстрая запись отменена",
+            reply_markup=TYPE_KEYBOARD
+        )
+        return TYPE_SELECTION
+    
+    try:
+        # Парсим текст вида "🍔 Еда 150"
+        parts = text.split()
+        emoji = parts[0]
+        category = parts[1]
+        amount = float(parts[2])
+        
+        user_id = update.effective_user.id
+        record = {
+            "type": "расход",
+            "category": category,
+            "amount": amount,
+            "date": datetime.now().strftime("%d.%m.%Y %H:%M"),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        if user_id not in user_data_store:
+            user_data_store[user_id] = []
+        user_data_store[user_id].append(record)
+        
+        await update.message.reply_text(
+            f"✅ *{emoji} {category} за {amount}₽ сохранен!*\n"
+            f"💳 Баланс автоматически обновлен.",
+            reply_markup=TYPE_KEYBOARD,
+            parse_mode="Markdown"
+        )
+        
+        # Показываем обновленную статистику
+        await show_quick_stats(update, user_id)
+        
+    except Exception as e:
+        logger.error(f"Ошибка быстрой записи: {e}")
+        await update.message.reply_text(
+            "❌ Ошибка записи",
+            reply_markup=TYPE_KEYBOARD
+        )
+    
+    return TYPE_SELECTION
+
+# Быстрая статистика после записи
+async def show_quick_stats(update: Update, user_id: int):
+    """Показывает краткую статистику после записи"""
+    records = user_data_store.get(user_id, [])
+    
+    if not records:
+        return
+        return
+    
+    # Статистика за сегодня
+    today = datetime.now().strftime("%d.%m.%Y")
+    today_expenses = sum(
+        r["amount"] for r in records 
+        if r["type"] == "расход" and r["date"].startswith(today)
+    )
+    
+    # Статистика за неделю
+    week_ago = (datetime.now() - timedelta(days=7)).strftime("%d.%m.%Y")
+    week_expenses = sum(
+        r["amount"] for r in records 
+        if r["type"] == "расход" and r["date"][:10] >= week_ago
+    )
+    
+    await update.message.reply_text(
+        f"📊 *Краткая статистика:*\n\n"
+        f"💸 Расходы сегодня: {today_expenses:,.0f}₽\n"
+        f"📅 Расходы за неделю: {week_expenses:,.0f}₽\n\n"
+        f"💡 Совет: старайтесь не превышать 1000₽ в день",
+        parse_mode="Markdown"
+    )
 
 # Команда /export - экспорт данных в CSV
 async def export_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -189,6 +291,28 @@ async def monthly_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # Добавим в глобальные переменные
 user_goals: Dict[int, Dict] = {}
+
+# Команда для удаления последней записи
+async def undo_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удаляет последнюю запись"""
+    user_id = update.effective_user.id
+    records = user_data_store.get(user_id, [])
+    
+    if not records:
+        await update.message.reply_text("📭 Нет записей для удаления")
+        return
+    
+    last_record = records.pop()
+    
+    await update.message.reply_text(
+        f"↩️ *Последняя запись удалена:*\n\n"
+        f"🗑️ {last_record['type'].capitalize()}\n"
+        f"🏷️ {last_record['category']}\n"
+        f"💰 {last_record['amount']:,.2f}₽\n"
+        f"📅 {last_record['date']}",
+        parse_mode="Markdown",
+        reply_markup=TYPE_KEYBOARD
+    )
 
 # Команда /goal для установки целей
 async def set_goal(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -369,6 +493,10 @@ async def check_subscriptions(context: ContextTypes.DEFAULT_TYPE):
 # Обработка выбора из главного меню
 async def handle_type_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
+    
+    # Добавьте в начало функции перед другими проверками:
+    if "Быстрый расход" in text:
+        return await quick_expense_menu(update, context)
     user_id = update.effective_user.id
     
     # Очищаем временные данные при новом запуске
@@ -735,6 +863,22 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=TYPE_KEYBOARD
     )
 
+async def setup_commands(application: Application):
+    """Настройка команд меню бота"""
+    commands = [
+        ("start", "Запустить бота"),
+        ("help", "Помощь"),
+        ("quick", "Быстрый расход"),
+        ("stats", "Статистика"),
+        ("history", "История"),
+        ("export", "Экспорт данных"),
+        ("undo", "Отменить последнюю запись"),
+        ("goals", "Мои цели"),
+        ("subscriptions", "Мои подписки")
+    ]
+    
+    await application.bot.set_my_commands(commands)
+
 # Основная функция
 def main():
     # Проверка токена
@@ -754,6 +898,7 @@ def main():
         states={
             TYPE_SELECTION: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_type_selection)
+                
             ],
             CATEGORY: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_category)
@@ -781,6 +926,7 @@ def main():
     application.add_handler(CommandHandler("goal_add", add_to_goal))
     application.add_handler(CommandHandler("subscribe", add_subscription))
     
+    
     # Добавим JobQueue для проверки подписок
     job_queue = application.job_queue
     if job_queue:
@@ -792,8 +938,11 @@ def main():
         )
     # Обработчик для неизвестных сообщений (должен быть последним)
     application.add_handler(MessageHandler(filters.ALL, unknown_message))
-    
+    # В main() после создания application добавьте:
+    application.add_handler(CommandHandler("quick", quick_expense_menu))
+    application.add_handler(CommandHandler("undo", undo_last))
     logger.info("Бот запущен...")
+    
     
     # Запускаем бота
     application.run_polling(drop_pending_updates=True)
