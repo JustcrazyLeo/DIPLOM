@@ -863,21 +863,7 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=TYPE_KEYBOARD
     )
 
-async def daily_digest(context: ContextTypes.DEFAULT_TYPE):
-    user_id = context.job.user_id
-    records = user_data_store.get(user_id, [])
-    
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y")
-    daily_expenses = sum(r["amount"] for r in records 
-                        if r["type"] == "расход" and r["date"].startswith(yesterday))
-    
-    await context.bot.send_message(
-        chat_id=user_id,
-        text=f"📊 *Доброе утро!*\n\n"
-             f"Вчера потрачено: *{daily_expenses:,.0f}₽*\n"
-             f"Сегодня {datetime.now().strftime('%d.%m.%Y')} - удачного дня!",
-        parse_mode="Markdown"
-    )
+
 
 async def setup_commands(application: Application):
     """Настройка команд меню бота"""
