@@ -879,6 +879,18 @@ async def daily_digest(context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
+def get_top_habits(user_id):
+    records = user_data_store.get(user_id, [])
+    if len(records) < 5:
+        return None
+    
+    expense_categories = {}
+    for r in records:
+        if r["type"] == "расход":
+            expense_categories[r["category"]] = expense_categories.get(r["category"], 0) + 1
+    
+    retu
+
 async def setup_commands(application: Application):
     """Настройка команд меню бота"""
     commands = [
