@@ -873,7 +873,7 @@ def get_top_habits(user_id):
         if r["type"] == "расход":
             expense_categories[r["category"]] = expense_categories.get(r["category"], 0) + 1
     
-    retu
+    return
 
 async def setup_commands(application: Application):
     """Настройка команд меню бота"""
