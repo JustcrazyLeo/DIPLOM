@@ -891,6 +891,22 @@ async def setup_commands(application: Application):
     
     await application.bot.set_my_commands(commands)
 
+async def daily_digest(context: ContextTypes.DEFAULT_TYPE):
+    user_id = context.job.user_id
+    records = user_data_store.get(user_id, [])
+    
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%d.%m.%Y")
+    daily_expenses = sum(r["amount"] for r in records 
+                        if r["type"] == "расход" and r["date"].startswith(yesterday))
+    
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=f"📊 *Доброе утро!*\n\n"
+             f"Вчера потрачено: *{daily_expenses:,.0f}₽*\n"
+             f"Сегодня {datetime.now().strftime('%d.%m.%Y')} - удачного дня!",
+        parse_mode="Markdown"
+    )
+
 # Основная функция
 def main():
     # Проверка токена
